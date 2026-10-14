@@ -1,0 +1,83 @@
+name: Atualizar galeria e publicar site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v4
+      - name: Preparar Pages
+        uses: actions/configure-pages@v5
+      - name: Montar galeria
+        run: |
+          python - <<'PY'
+          from html import escape
+          from pathlib import Path
+          import re
+          from urllib.parse import quote
+          import shutil
+
+          root = Path('.')
+          output = Path('public')
+          if output.exists():
+              shutil.rmtree(output)
+          output.mkdir()
+          extensions = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+          images = sorted(
+              (p for p in root.rglob('*') if p.is_file() and p.suffix.lower() in extensions
+               and 'public' not in p.parts and '.git' not in p.parts and '.github' not in p.parts),
+              key=lambda p: str(p).lower()
+          )
+          cards = []
+          for path in images:
+              relative = path.relative_to(root)
+              destination = output / relative
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(path, destination)
+              url = quote(relative.as_posix(), safe='/')
+              title = ' '.join(re.sub(r'[-_]+', ' ', path.stem).split()).title()
+              if path.name.lower() == 'brasil-13-ordem-e-progresso.jpeg':
+                  tag, title, description, alt = ('Brasil · 13', 'Ordem e Progresso',
+                      'Uma leitura vibrante dos símbolos brasileiros, em verde, amarelo e azul.',
+                      'Ilustração artística da bandeira do Brasil em verde e amarelo, com o número 13 sobre o círculo azul estrelado.')
+              else:
+                  tag, description, alt = ('Imagem para compartilhar',
+                      'Imagem disponível para baixar e compartilhar.', title)
+              cards.append(f'''<article class="card"><a class="image" href="./{url}" target="_blank" rel="noopener" aria-label="Abrir imagem em tamanho original"><img src="./{url}" alt="{escape(alt, quote=True)}" loading="lazy"></a><div class="body"><span class="tag">{escape(tag)}</span><h3>{escape(title)}</h3><p>{escape(description)}</p><div class="actions"><a class="button" href="./{url}" download>Baixar imagem</a><a class="plain" href="./{url}" target="_blank" rel="noopener">Ver tamanho original ↗</a></div></div></article>''')
+
+          page = Path('index.html').read_text(encoding='utf-8')
+          page = re.sub(r'<span class="count">.*?</span>',
+              f'<span class="count">{len(images)} {"imagem" if len(images) == 1 else "imagens"}</span>', page, count=1)
+          pattern = r'(<section aria-labelledby="gallery-title">.*?<div class="gallery">).*?(</div>\s*</section>)'
+          page, changed = re.subn(pattern, lambda m: m.group(1) + ''.join(cards) + m.group(2), page, count=1, flags=re.S)
+          if changed != 1:
+              raise SystemExit('Não foi possível localizar a galeria no index.html')
+          (output / 'index.html').write_text(page, encoding='utf-8')
+          if Path('README.md').exists():
+              shutil.copy2('README.md', output / 'README.md')
+          print(f'Galeria preparada com {len(images)} imagem(ns).')
+          PY
+      - name: Enviar artefato do site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+      - name: Publicar no GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
